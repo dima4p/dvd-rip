@@ -1,0 +1,327 @@
+#!/bin/bash
+
+dirname=~/video/Movies
+media=/run/media/$USER
+mounted=/mnt/dvd
+index=1
+run='yes'
+loglevel=warning
+min_length=120
+
+get_titles() {
+  echo $(
+    grep -Pe 'Title\s+\d+' "$1" | rev | cut -d ' ' -f 1 | rev
+  )
+}
+
+help() {
+cat <<- EOF
+  Usage: `basename $0` NAME [options]
+    Rips the mounted DVD and stores the film under the NAME.mp4
+    Note that the extension .mp4 is always added to the NAME.
+    You can mount the disk in $mounted manually or use an automatic
+    mount in $media or specify the mounted directory in options.
+  Options:
+    -a, --aspect ASPECT
+        Adds parameter -aspect to ffmpeg. The possible values are:
+        "16:9", "21:9", and "4:3". You can shortcut it to the first
+        number.
+    -c, --color
+        Let ffmpeg to colorize the output.
+    -d, --directory DIRECTORY
+        Stores the film in the DIRECTORY. Default is $dirname
+        The DIRECTORY must exist.
+    -f, --format FORMAT
+        This option allows to change the dimensions of the picture
+        enabling to cut of blank areas above and below the puncture.
+        When it is not specified the dimensions are not changed.
+        The possible variants are:
+          3 - cuts the picture to 720x308
+          4 - cuts the picture to 720x404
+    -i, --index NUMBER
+        Sometimes DVD contains more than one video. There can be
+        advertising and other materials. This option specifies
+        the number of the required video on the DVD. Default 1.
+    -k, --makemkv
+        If DVD contains subtitles that you want to keem and/or
+        the .VOB files are encoded so that ffmpeg can not read
+        them directly you can pre-process them with the program
+        makemkv that must be installed
+    -l, --min-length NUMBER
+        makemkv ignores the titles that are shorter than defined number
+        of seconds. Here you can change it. Default is $min_length s.
+    -m, --mounted MOUNT_POINT
+        Specify the mount point of the disk. When not specified
+        used the mount point described above.
+    -n, --dry-run
+        Do not perform the real work, only show the commands for it.
+        If --makemkv is in use, the temporary file with the titles
+        is not deleted. See the option -T.
+    -p, --prefix SUBDIRECTORY
+        This option if set creates a SUBDIRECTORY in DIRECTORY and
+        places your file in it.
+        if SUBDIRECTORY does not exit it is created.
+    -T, --titles-file NAME
+        When makemkv is in use it creates a temporary file with the
+        titles found on the disk. The file is deleted at the end of the
+        processing. But if you are going to extract more than one title
+        it is worth not to create the file every time to save the time.
+        With this option the file named by NAME will be created in the
+        destination directory and will not be deleted. You have to do
+        it self. Be sure that at the first rip of a new disc this file
+        should not exist.
+    -t, --tone
+        Play a tone at the end of the processing unless -n is given.
+    -v, --loglevel LEVEL
+        It is the parameter of ffmpeg and can be a string or a number.
+        Some of the possible variants are:
+          error, 16   - Show only errors
+          warning, 24 - Show all warnings and errors
+          info, 32    - Show informative messages during processing
+          verbose, 40 - Same as info, except more verbose
+        Default is $loglevel.
+EOF
+}
+
+play_tone() {
+  [[ -n $run ]] && [[ -n $tone ]] && speaker-test -t sine -f 1000 -l 1 >/dev/null
+}
+
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -a|--aspect)
+      aspect="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -c|--color)
+      color=Y
+      shift # past argument
+      ;;
+    -d|--directory)
+      dirname="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -f|--format)
+      format="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -i|--index)
+      index="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -k|--makemkv)
+      mkv=Y
+      shift # past argument
+      ;;
+    -l|--min-length)
+      min_length="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -m|--mounted)
+      mounted="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -n|----dry-run)
+      run=''
+      shift # past argument
+      ;;
+    -p|--prefix)
+      prefix="/$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -s|--scale)
+      scale="-vf 'scale=iw*1.2:ih'"
+      shift # past argument
+      ;;
+    -t|--tone)
+      tone=y
+      shift # past argument
+      ;;
+    -T|--titles-file)
+      titles_file="$2"
+      keep_titles_file=Y
+      shift # past argument
+      shift # past value
+      ;;
+    -h|--help)
+      help
+      play_tone
+      exit
+      ;;
+    -*|--*)
+      echo "Unknown option $1"
+      help
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1") # save positional arg
+      shift # past argument
+      ;;
+  esac
+done
+set -- "${POSITIONAL_ARGS[@]}"
+
+[[ -z $color ]] && export AV_LOG_FORCE_NOCOLOR=true
+
+if [[ -d $mounted/VIDEO_TS ]]; then
+  source=$mounted/VIDEO_TS
+elif [[ -d $media ]]; then
+  for d in $media/*; do
+    if [[ -d "$d" && -d "$d"/VIDEO_TS ]]; then
+      source="$d"/VIDEO_TS
+      break
+    fi
+  done
+fi
+
+if [[ -z $source ]]; then
+  echo DVD is not mounted
+  help
+  exit 1
+fi
+
+if [[ ! -d $dirname ]]; then
+  echo "\"$dirname\" is not a directory"
+  help
+  exit 1
+fi
+
+name=$1
+if [[ -z $name ]]; then
+  echo Filename must be present
+  help
+  exit 1
+fi
+
+if [[ "$aspect" == "4" ]]; then
+  aspect="-aspect 4:3"
+elif [[ "$aspect" == "4:3" ]]; then
+  aspect="-aspect 4:3"
+elif [[ "$aspect" == "2" ]]; then
+  aspect="-aspect 21:9"
+elif [[ "$aspect" == "21:9" ]]; then
+  aspect="-aspect 21:9"
+elif [[ "$aspect" == "1" ]]; then
+  aspect="-aspect 16:9"
+elif [[ "$aspect" == "16:9" ]]; then
+  aspect="-aspect 16:9"
+elif [[ -n $aspect ]]; then
+  echo "wrong aspect \"$aspect\""
+  help
+  exit 1
+fi
+
+if [[ "$format" == "4" ]]; then
+  echo "With the hight 404"
+  sleep 2
+  crop="-filter:v crop=x=83:out_w=720:out_h=410"
+elif [[ "$format" == "3" ]]; then
+  echo "With the hight 308"
+  sleep 2
+  crop="-filter:v crop=x=96:out_w=720:out_h=308"
+elif [[ -z $format ]]; then
+  echo "With the default hight "
+  sleep 2
+else
+  echo "wrong format \"$format\""
+  help
+  exit 1
+fi
+
+if [[ -n $mkv && -n $run ]] && ! which makemkvcon 2>/dev/null >/dev/null; then
+  echo "makemkv is not available"
+  exit 2
+fi
+
+dirname="$dirname""$prefix"
+if [[ ! -d "$dirname" ]]; then
+  mkdir "$dirname"
+fi
+
+titles_file="$dirname"/"${titles_file:-"$name".$min_length-titles.txt}"
+name="$dirname"/"$name"
+
+if [[ -f "$name".mp4 && -n $run ]]; then
+  echo "$name".mp4 is ready
+  exit 0
+fi
+
+if [[ -n $mkv ]]; then
+  echo -e "\e[1;31mmakemkvcon\e[0m --minlength=$min_length info disc:0 > '$titles_file'"
+  [[ ! -f "$titles_file" ]] && \
+      makemkvcon --minlength=$min_length info disc:0 >"$titles_file"
+  titles=$(get_titles "$titles_file")
+  len=`echo $titles | rev | cut -d ' ' -f 1 | rev`
+  echo -e "\e[1;31m$((len + 1)) title(s) found\e[0m"
+
+  mkv=$((index - 1))
+  if [[ $mkv -gt $len ]]; then
+    echo "There is no title for index '$index'"
+    exit 1
+  fi
+  len=`echo ${#len}`
+
+  mkv=$(printf "%0${len}d" $mkv)
+  grep -A100 -Ee "Title\s+$mkv" "$titles_file" | sed -n "/Title\s*$mkv/,/^$/p" \
+    | grep Subtitles >/dev/null && subtitles='-map 0:s -scodec copy'
+
+  echo -e "\e[1;31mmakemkvcon\e[0m --minlength=$min_length --messages=-null --progress='$name.log' mkv disc:0 $mkv '$dirname'"
+  mkv_file=`echo "$dirname"/*$mkv.mkv`
+  [[ -n $run && ! -f "$mkv_file" && ! -f "$name".mp4 ]] && \
+    makemkvcon  --minlength=$min_length --messages=-null --progress="$name".log mkv disc:0 $mkv "$dirname"
+
+  mkv_file=`echo "$dirname"/*$mkv.mkv`
+  echo -e "\e[1;31mffmpeg\e[0m -v $loglevel -i" "'$mkv_file'" "-map 0:v -map 0:a -vcodec libx264 $subtitles $crop $aspect '$name.mp4'"
+  if [[ -n $run ]]; then
+    if [[ -f "$mkv_file" ]] && [[ ! -f "$name".mp4 ]]; then
+      ffmpeg -v $loglevel -i "$mkv_file" -map 0:v -map 0:a -vcodec libx264 $subtitles $crop $aspect "$name".mp4
+      res=$?
+    else
+      echo "No file '$mkv_file' is found"
+      res=1
+    fi
+  fi
+else
+  index=$(printf "%02d" $index)
+  if [[ ! -f "$source"/VTS_${index}_1.VOB ]]; then
+    echo "There is no entry for index '$index'"
+    exit 1
+  fi
+
+  for i in "$source"/VTS_${index}_*.VOB; do
+    n=`echo $i | rev | cut -d_ -f 1 | rev | cut -d. -f 1`
+    if [[ $n == "0" ]]; then  continue; fi
+    if  [[ ! -f "$name-$n.mp4" ]]; then
+      echo -e "\e[1;31mffmpeg\e[0m -v $loglevel -i '$i' -map 0:v -map 0:a -vcodec libx264 $crop $aspect '$name-$n.mp4'"
+      if [[ -n $run ]]; then
+        ffmpeg -v $loglevel -i "$i" -map 0:v -map 0:a -vcodec libx264 $crop $aspect "$name"-$n.mp4
+        res=$?
+      fi
+      [[ $res == 0 ]] || break
+    fi
+  done
+
+  [[ -n $run ]] && printf "file %q\n" "$name"-*.mp4 | tee "$name".log
+
+  echo -e "\e[1;31mffmpeg\e[0m -v $loglevel -f concat -safe 0 -i '$name.log' -c copy -map 0 '$name.mp4'"
+  [[ -z $res ]] && res=0
+  [[ -n $run ]] && [[ $res == 0 ]] && \
+      ffmpeg -v $loglevel -f concat -safe 0 -i "$name".log -c copy -map 0 "$name".mp4
+  res=$?
+fi
+#echo "=== $res"
+
+if [[ $res == 0 && -f "$name".mp4 ]]; then
+  echo "$name".mp4 is ready
+  rm -f "$name".log "$name"-*.mp4 "$mkv_file"
+  [[ -n $run && -z $keep_titles_file ]] && rm -f  "$titles_file"
+fi
+play_tone
